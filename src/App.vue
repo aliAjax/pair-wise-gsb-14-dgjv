@@ -1,193 +1,67 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, ref } from "vue";
+import type { PriceOrder } from "./types";
+import { usePriceStore } from "./store";
+import OrderForm from "./components/OrderForm.vue";
+import OrderList from "./components/OrderList.vue";
+import ConflictPanel from "./components/ConflictPanel.vue";
+import MemberBoard from "./components/MemberBoard.vue";
+import LimitPanel from "./components/LimitPanel.vue";
+import ReviewDialog from "./components/ReviewDialog.vue";
+import VerifyDialog from "./components/VerifyDialog.vue";
 
-type Field = {
-  key: string;
-  label: string;
-  type?: "number" | "date" | "select";
-  options?: readonly string[];
-};
+const store = usePriceStore();
 
-type RecordItem = {
-  id: string;
-  status: string;
-  notes: string;
-  createdAt: string;
-  [key: string]: string | number;
-};
+type Tab = "orders" | "board" | "conflicts" | "limits";
+const tab = ref<Tab>("orders");
 
-const project = {
-  "number": 9,
-  "folder": "dfwl/frontend/dfwlfront-9",
-  "framework": "vue",
-  "title": "油品价格维护",
-  "subtitle": "维护挂牌价、记录更新时间，并支持恢复默认价格。",
-  "industry": "石油",
-  "stack": [
-    "Vue3",
-    "Vite",
-    "TypeScript",
-    "Pinia",
-    "Naive UI"
-  ],
-  "storageKey": "dfwlfront-9-price",
-  "formTitle": "调整油品价格",
-  "primaryAction": "保存价格",
-  "entityLabel": "油品",
-  "statuses": [
-    "生效中",
-    "待确认",
-    "已回退"
-  ],
-  "filters": [
-    "全部油品",
-    "92号汽油",
-    "95号汽油",
-    "98号汽油",
-    "柴油"
-  ],
-  "fields": [
-    {
-      "key": "fuel",
-      "label": "油品",
-      "type": "select",
-      "options": [
-        "92号汽油",
-        "95号汽油",
-        "98号汽油",
-        "柴油"
-      ]
-    },
-    {
-      "key": "price",
-      "label": "挂牌价",
-      "type": "number"
-    },
-    {
-      "key": "operator",
-      "label": "操作员"
-    },
-    {
-      "key": "effectiveDate",
-      "label": "生效日期",
-      "type": "date"
-    }
-  ],
-  "records": [
-    {
-      "fuel": "92号汽油",
-      "price": 7.62,
-      "operator": "站长",
-      "effectiveDate": "2026-06-30",
-      "status": "生效中",
-      "notes": "正常调价"
-    },
-    {
-      "fuel": "柴油",
-      "price": 7.18,
-      "operator": "值班经理",
-      "effectiveDate": "2026-06-30",
-      "status": "待确认",
-      "notes": "等待复核"
-    }
-  ],
-  "metricLabels": [
-    "油品数",
-    "待确认",
-    "平均挂牌价"
-  ]
-} as const;
+const tabs: { key: Tab; label: string }[] = [
+  { key: "orders", label: "调价单" },
+  { key: "board", label: "会员生效看板" },
+  { key: "conflicts", label: "冲突与规则" },
+  { key: "limits", label: "限价发布台" }
+];
 
-const fields = project.fields as readonly Field[];
-const statuses = [...project.statuses];
+const draftCount = computed(() => store.orders.filter((o) => o.status === "draft").length);
+const publishedCount = computed(() => store.orders.filter((o) => o.status === "published").length);
+const activeCount = computed(() => store.board.filter((r) => r.active).length);
+const blockCount = computed(() => store.conflicts.filter((c) => c.level === "block").length);
 
-function createBlank() {
-  return Object.fromEntries(fields.map((field) => [field.key, field.type === "number" ? 0 : ""]));
+// 弹窗与表单上下文
+const preset = ref<{ order: PriceOrder; mode: "edit" | "adjust" } | null>(null);
+const reviewTarget = ref<PriceOrder | null>(null);
+const verifyTarget = ref<PriceOrder | null>(null);
+const formKey = ref(0);
+
+function edit(o: PriceOrder) {
+  preset.value = { order: o, mode: "edit" };
+  formKey.value++;
 }
-
-function loadRecords(): RecordItem[] {
-  const raw = localStorage.getItem(project.storageKey);
-  if (!raw) {
-    return project.records.map((record, index) => ({
-      ...record,
-      id: `seed-${index + 1}`,
-      createdAt: new Date(Date.now() - index * 86400000).toISOString()
-    })) as RecordItem[];
-  }
-  try {
-    return JSON.parse(raw) as RecordItem[];
-  } catch {
-    return [];
-  }
+function adjust(o: PriceOrder) {
+  preset.value = { order: o, mode: "adjust" };
+  formKey.value++;
+  tab.value = "orders";
 }
-
-const records = ref<RecordItem[]>(loadRecords());
-const form = reactive<Record<string, string | number>>(createBlank());
-const note = ref("");
-const filter = ref(project.filters[0]);
-
-const filteredRecords = computed(() => {
-  if (filter.value.startsWith("全部")) return records.value;
-  return records.value.filter((record) => Object.values(record).includes(filter.value));
-});
-
-const metrics = computed(() => {
-  const total = records.value.length;
-  const second = records.value.filter((record) => record.status === statuses[1]).length;
-  const third = records.value.filter((record) => record.status === statuses[2]).length;
-  const numberValues = records.value.flatMap((record) =>
-    fields.filter((field) => field.type === "number").map((field) => Number(record[field.key] || 0))
-  );
-  const sum = numberValues.reduce((acc, value) => acc + value, 0);
-  return [total, second || sum, third || Math.round(sum / Math.max(total, 1))];
-});
-
-const chartRows = computed(() => statuses.map((status) => ({
-  status,
-  value: records.value.filter((record) => record.status === status).length
-})));
-
-const maxChart = computed(() => Math.max(1, ...chartRows.value.map((row) => row.value)));
-
-function persist() {
-  localStorage.setItem(project.storageKey, JSON.stringify(records.value));
+function formDone() {
+  preset.value = null;
+  formKey.value++;
 }
-
-function nextStatus(status: string) {
-  const index = statuses.indexOf(status);
-  return statuses[(index + 1) % statuses.length];
+function onReview(o: PriceOrder) {
+  reviewTarget.value = o;
 }
-
-function primaryText(record: RecordItem) {
-  const first = fields[0];
-  const second = fields[1];
-  return [record[first.key], record[second.key]].filter(Boolean).join(" / ") || project.entityLabel;
+function onVerify(o: PriceOrder) {
+  verifyTarget.value = o;
 }
-
-function submit() {
-  records.value = [
-    {
-      ...form,
-      id: crypto.randomUUID(),
-      status: statuses[0],
-      notes: note.value || "暂无备注",
-      createdAt: new Date().toISOString()
-    } as RecordItem,
-    ...records.value
-  ];
-  Object.assign(form, createBlank());
-  note.value = "";
-  persist();
+function submitReviewPayload(p: { reviewer: string; basis: string }) {
+  if (reviewTarget.value) store.submitReview(reviewTarget.value.id, p);
+  reviewTarget.value = null;
 }
-
-function flow(record: RecordItem) {
-  record.status = nextStatus(record.status);
-  persist();
+function submitVerifyPayload(p: { verifier: string; tagPrice: number }) {
+  if (verifyTarget.value) store.verifyTag(verifyTarget.value.id, p);
+  verifyTarget.value = null;
 }
-
-function remove(id: string) {
-  records.value = records.value.filter((record) => record.id !== id);
-  persist();
+function reloadPage() {
+  location.reload();
 }
 </script>
 
@@ -196,78 +70,74 @@ function remove(id: string) {
     <div class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">{{ project.industry }}行业前端最小闭环</p>
-          <h1>{{ project.title }}</h1>
-          <p class="subtitle">{{ project.subtitle }}</p>
+          <p class="eyebrow">石油行业 · 会员营销与价格管控</p>
+          <h1>会员优惠与限价发布台</h1>
+          <p class="subtitle">
+            调价单按站点、油品、时段与优惠方式编排；同站同油品时段不得跨链重叠，到手价须落在最高零售价与成本保护线之间。
+            触线须站长复核写依据，发布即冻结、调整另立版本、撤销恢复最近有效版本，价签未核验不对会员生效。
+          </p>
         </div>
-        <div class="stack">
-          <span v-for="item in project.stack" :key="item" class="tag">{{ item }}</span>
+        <div class="top-actions">
+          <button class="secondary" type="button" @click="reloadPage">重载页面验证持久化</button>
+          <button class="secondary" type="button" @click="store.resetAll()">恢复演示数据</button>
         </div>
       </header>
 
       <section class="metrics">
-        <article v-for="(label, index) in project.metricLabels" :key="label" class="metric">
-          <span>{{ label }}</span>
-          <strong>{{ metrics[index] }}</strong>
+        <article class="metric"><span>待发布草稿</span><strong>{{ draftCount }}</strong></article>
+        <article class="metric"><span>已发布冻结</span><strong>{{ publishedCount }}</strong></article>
+        <article class="metric"><span>会员价生效</span><strong>{{ activeCount }}</strong></article>
+        <article class="metric" :class="{ alert: blockCount > 0 }">
+          <span>阻断冲突</span><strong>{{ blockCount }}</strong>
         </article>
       </section>
 
-      <section class="workspace">
-        <form class="panel" @submit.prevent="submit">
-          <h2>{{ project.formTitle }}</h2>
-          <div class="form-grid">
-            <label v-for="field in fields" :key="field.key">
-              {{ field.label }}
-              <select v-if="field.type === 'select'" v-model="form[field.key]" required>
-                <option value="">请选择</option>
-                <option v-for="option in field.options" :key="option">{{ option }}</option>
-              </select>
-              <input v-else v-model="form[field.key]" :type="field.type || 'text'" required />
-            </label>
-            <label>
-              备注
-              <textarea v-model="note" placeholder="填写处理说明或现场备注" />
-            </label>
-            <button type="submit">{{ project.primaryAction }}</button>
-          </div>
-        </form>
+      <nav class="tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          type="button"
+          :class="{ active: tab === t.key }"
+          @click="tab = t.key"
+        >
+          {{ t.label }}
+          <i v-if="t.key === 'conflicts' && blockCount" class="tab-badge">{{ blockCount }}</i>
+        </button>
+      </nav>
 
-        <section class="list-panel">
-          <div class="toolbar">
-            <h2>{{ project.entityLabel }}列表</h2>
-            <select v-model="filter">
-              <option v-for="item in project.filters" :key="item">{{ item }}</option>
-            </select>
-          </div>
+      <OrderForm
+        v-if="tab === 'orders'"
+        :key="formKey"
+        :preset="preset"
+        @done="formDone"
+        style="margin-bottom: 18px"
+      />
 
-          <div class="record-grid">
-            <div v-if="filteredRecords.length === 0" class="empty">暂无匹配数据</div>
-            <article v-for="record in filteredRecords" :key="record.id" class="record">
-              <div class="record-head">
-                <p class="record-title">{{ primaryText(record) }}</p>
-                <span class="status">{{ record.status }}</span>
-              </div>
-              <div class="details">
-                <span v-for="field in fields" :key="field.key">{{ field.label }}: {{ record[field.key] }}</span>
-              </div>
-              <p class="note">{{ record.notes }}</p>
-              <div class="actions">
-                <button type="button" @click="flow(record)">流转状态</button>
-                <button class="secondary" type="button" @click="navigator.clipboard?.writeText(primaryText(record))">复制摘要</button>
-                <button class="danger" type="button" @click="remove(record.id)">删除</button>
-              </div>
-            </article>
-          </div>
-
-          <div class="mini-chart">
-            <div v-for="row in chartRows" :key="row.status" class="bar">
-              <span>{{ row.status }}</span>
-              <div class="bar-track"><div class="bar-fill" :style="{ width: `${(row.value / maxChart) * 100}%` }" /></div>
-              <strong>{{ row.value }}</strong>
-            </div>
-          </div>
-        </section>
-      </section>
+      <div class="workspace" :class="{ single: tab !== 'orders' }">
+        <OrderList
+          v-if="tab === 'orders'"
+          @review="onReview"
+          @verify="onVerify"
+          @edit="edit"
+          @adjust="adjust"
+        />
+        <MemberBoard v-if="tab === 'board'" />
+        <ConflictPanel v-if="tab === 'conflicts'" />
+        <LimitPanel v-if="tab === 'limits'" />
+      </div>
     </div>
+
+    <div v-if="store.toast" class="toast">{{ store.toast }}</div>
+
+    <ReviewDialog
+      :order="reviewTarget"
+      @close="reviewTarget = null"
+      @submit="submitReviewPayload"
+    />
+    <VerifyDialog
+      :order="verifyTarget"
+      @close="verifyTarget = null"
+      @submit="submitVerifyPayload"
+    />
   </main>
 </template>
